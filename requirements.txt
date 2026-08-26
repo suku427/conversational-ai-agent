@@ -7,3 +7,11 @@ chromadb
 langchain-huggingface
 numpy<2.0.0
 sentence-transformers
+psycopg2-binary
+pgvector
+openai
+fastapi
+uvicorn
+ragas
+pytest
+httpx

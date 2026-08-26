@@ -1,0 +1,22 @@
+[
+    {
+        "question": "What is the price of the Basic Plan?",
+        "answer": "The Basic Plan costs $29/month.",
+        "context": "Basic Plan: $29/month. Features: 10 videos/month, 720p resolution."
+    },
+    {
+        "question": "How much is the Pro Plan?",
+        "answer": "The Pro Plan costs $79/month.",
+        "context": "Pro Plan: $79/month. Features: Unlimited videos, 4K resolution, AI captions, 24/7 support."
+    },
+    {
+        "question": "What is the refund policy?",
+        "answer": "No refunds after 7 days.",
+        "context": "Refund policy: No refunds after 7 days."
+    },
+    {
+        "question": "Is 24/7 support included with the Pro plan?",
+        "answer": "Yes, 24/7 support is available on the Pro plan.",
+        "context": "Support policy: 24/7 support available only on Pro plan."
+    }
+]

@@ -1,67 +1,162 @@
 import json
 import os
+from functools import lru_cache
+from typing import Any, Dict, List
+
+import psycopg2
 from dotenv import load_dotenv
-from langchain_core.documents import Document
-from langchain_chroma import Chroma
-from langchain_huggingface import HuggingFaceEmbeddings
+from pgvector.psycopg2 import register_vector
+from sentence_transformers import SentenceTransformer
 
 load_dotenv()
 
-# --- 1. LOAD DATA ---
-def load_knowledge_base():
-    """Reads the JSON file and converts it into LangChain Documents."""
+DB_NAME = os.getenv("POSTGRES_DB", "vectordb")
+DB_USER = os.getenv("POSTGRES_USER", "postgres")
+DB_PASSWORD = os.getenv("POSTGRES_PASSWORD", "admin")
+DB_HOST = os.getenv("PGHOST", "localhost")
+DB_PORT = os.getenv("PGPORT", "5432")
+EMBEDDING_DIMENSIONS = 1536 if os.getenv("OPENAI_API_KEY") else 384
+
+
+@lru_cache(maxsize=1)
+def get_local_embedding_model() -> SentenceTransformer:
+    return SentenceTransformer("all-MiniLM-L6-v2")
+
+
+def get_connection():
+    conn = psycopg2.connect(
+        dbname=DB_NAME,
+        user=DB_USER,
+        password=DB_PASSWORD,
+        host=DB_HOST,
+        port=DB_PORT,
+    )
+    conn.autocommit = True
+    register_vector(conn)
+    return conn
+
+
+def load_knowledge_base() -> List[Dict[str, str]]:
+    """Read the JSON knowledge base used by the app."""
     file_path = os.path.join("data", "knowledge_base.json")
-    
-    with open(file_path, "r") as f:
-        data = json.load(f)
-    
-    # Convert JSON structure into a readable string format for the LLM
-    text_content = (
-        f"Company: {data['company_name']}\n"
-        f"Product: {data['product']}\n\n"
-        "PLANS:\n"
+    with open(file_path, "r", encoding="utf-8") as file:
+        data = json.load(file)
+
+    documents: List[Dict[str, str]] = [
+        {
+            "content": (
+                f"Company: {data['company_name']}\n"
+                f"Product: {data['product']}\n\n"
+                "PLANS:\n"
+                + "\n".join(
+                    [
+                        f"- {plan['name']}: {plan['price']}\n  Features: {', '.join(plan['features'])}"
+                        for plan in data["plans"]
+                    ]
+                )
+                + "\n\nPOLICIES:\n"
+                + f"- Refunds: {data['policies']['refund_policy']}\n"
+                + f"- Support: {data['policies']['support_policy']}\n"
+            )
+        }
+    ]
+    documents.extend(
+        {
+            "content": (
+                f"Plan: {plan['name']}\n"
+                f"Price: {plan['price']}\n"
+                f"Features: {', '.join(plan['features'])}"
+            )
+        }
+        for plan in data["plans"]
     )
-    
-    for plan in data['plans']:
-        text_content += (
-            f"- {plan['name']}: {plan['price']}\n"
-            f"  Features: {', '.join(plan['features'])}\n"
+    return documents
+
+
+def ensure_database_schema() -> None:
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("CREATE EXTENSION IF NOT EXISTS vector;")
+    cur.execute(
+        f"""
+        CREATE TABLE IF NOT EXISTS knowledge_base (
+            id SERIAL PRIMARY KEY,
+            content TEXT NOT NULL,
+            embedding vector({EMBEDDING_DIMENSIONS})
+        );
+        """
+    )
+    cur.execute("TRUNCATE TABLE knowledge_base;")
+    cur.close()
+    conn.close()
+
+
+def embed_text(text: str) -> List[float]:
+    """Generate an embedding using OpenAI if configured, otherwise fallback to a local model."""
+    openai_api_key = os.getenv("OPENAI_API_KEY")
+    if openai_api_key:
+        from openai import OpenAI
+
+        client = OpenAI(api_key=openai_api_key)
+        response = client.embeddings.create(
+            model="text-embedding-3-small",
+            input=text,
         )
-        
-    text_content += "\nPOLICIES:\n"
-    text_content += f"- Refunds: {data['policies']['refund_policy']}\n"
-    text_content += f"- Support: {data['policies']['support_policy']}\n"
+        return response.data[0].embedding
 
-    return [Document(page_content=text_content)]
+    model = get_local_embedding_model()
+    return model.encode(text).tolist()
 
-# --- 2. CREATE RETRIEVER ---
-def get_retriever():
-    """Builds the Vector Store and returns a retriever object."""
-    docs = load_knowledge_base()
-    
-    # CHANGED: Initialize Local Embedding Model
-    # This runs on your CPU, is free, and has NO rate limits.
-    embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
-    
-    # Create a local vector store (Chroma) in memory
-    vectorstore = Chroma.from_documents(
-        documents=docs,
-        embedding=embeddings,
-        collection_name="autostream_knowledge"
-    )
-    
-    # Return a retriever
-    return vectorstore.as_retriever(search_kwargs={"k": 1})
 
-# --- TEST BLOCK ---
+def ingest_knowledge_base() -> None:
+    """Populate the PostgreSQL table with vectorized knowledge base rows."""
+    ensure_database_schema()
+    records = load_knowledge_base()
+    conn = get_connection()
+    cur = conn.cursor()
+    for record in records:
+        embedding = embed_text(record["content"])
+        cur.execute(
+            "INSERT INTO knowledge_base (content, embedding) VALUES (%s, %s)",
+            (record["content"], embedding),
+        )
+    cur.close()
+    conn.close()
+
+
+def retrieve_context(query: str, limit: int = 3) -> List[Dict[str, Any]]:
+    """Run a cosine-similarity search against PostgreSQL pgvector; fallback to JSON data if missing."""
+    try:
+        conn = get_connection()
+        cur = conn.cursor()
+        query_vector = embed_text(query)
+        cur.execute(
+            """
+            SELECT id, content, 1 - (embedding <=> %s::vector) AS similarity
+            FROM knowledge_base
+            ORDER BY embedding <=> %s::vector DESC
+            LIMIT %s;
+            """,
+            (query_vector, query_vector, limit),
+        )
+        rows = cur.fetchall()
+        cur.close()
+        conn.close()
+        if rows:
+            return [
+                {"id": row[0], "content": row[1], "similarity": float(row[2])}
+                for row in rows
+            ]
+    except Exception:
+        pass
+
+    fallback = load_knowledge_base()
+    return [{"id": idx, "content": item["content"], "similarity": 1.0} for idx, item in enumerate(fallback[:limit])]
+
+
 if __name__ == "__main__":
-    print("🔄 Indexing knowledge base (this may take a moment first time)...")
-    retriever = get_retriever()
-    
-    # Test query
-    query = "How much does the Basic Plan cost?"
-    result = retriever.invoke(query)
-    
-    print("\n✅ RAG Test Results:")
-    print(f"Query: {query}")
-    print(f"Retrieved Context: \n{result[0].page_content}")
+    print("Ingesting the knowledge base into PostgreSQL...")
+    ingest_knowledge_base()
+    print("Retrieval test:")
+    for item in retrieve_context("How much does the Basic Plan cost?"):
+        print(item["content"])
