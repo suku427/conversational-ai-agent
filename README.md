@@ -6,6 +6,110 @@ This project is meant to be understandable by both non-technical stakeholders an
 
 ---
 
+## Quick Start: Run the Project
+
+### Windows PowerShell
+
+```powershell
+cd conversational-ai-agent
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install -r requirements.txt
+Copy-Item .env.example .env
+```
+
+Open `.env`, add your Google API key, and then start the interactive agent:
+
+```powershell
+python test_agent.py
+```
+
+Type a question at `You:` and press Enter. Type `q` to quit.
+
+### macOS/Linux
+
+```bash
+cd conversational-ai-agent
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install -r requirements.txt
+cp .env.example .env
+```
+
+Add your Google API key to `.env`, then run:
+
+```bash
+python test_agent.py
+```
+
+### Run the API instead
+
+Start the FastAPI server:
+
+```bash
+uvicorn main:app --host 0.0.0.0 --port 8000
+```
+
+Check that it is running:
+
+```text
+http://localhost:8000/health
+```
+
+Send a chat request:
+
+```bash
+curl -X POST http://localhost:8000/api/v1/chat \
+  -H "Content-Type: application/json" \
+  -d '{"prompt":"What is the price of the Basic Plan?"}'
+```
+
+### Run with Docker
+
+Make sure Docker Desktop is running, then execute:
+
+```bash
+docker compose up --build
+```
+
+The API will be available at `http://localhost:8000`. Stop the containers with:
+
+```bash
+docker compose down
+```
+
+### Run the tests
+
+```bash
+python -m pytest -q tests/test_api_and_rag.py tests/test_agent_tools.py
+```
+
+---
+
+## Screenshots
+
+These screenshots show the AutoStream agent running through the interactive CLI with Gemini.
+
+### 1. Agent greeting and product introduction
+
+The agent responds to a greeting and explains what AutoStream does.
+
+![AutoStream agent greeting and product introduction](screenshots/img1.png)
+
+### 2. Pricing and signup guidance
+
+The agent answers subscription questions and asks for the information required to continue signup.
+
+![AutoStream pricing and signup conversation](screenshots/img2.png)
+
+### 3. Automated video editing workflow
+
+The agent explains the steps for using AutoStream, from uploading media to reviewing and exporting the final video.
+
+![AutoStream automated video editing workflow](screenshots/img3.png)
+
+---
+
 ## 1. Why this project exists
 
 Modern businesses often receive repetitive customer questions like:
